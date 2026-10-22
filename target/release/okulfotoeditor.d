@@ -1,0 +1,1 @@
+/Users/ysrmacbook/okulfotoeditor/target/release/okulfotoeditor: /Users/ysrmacbook/okulfotoeditor/src/icons.rs /Users/ysrmacbook/okulfotoeditor/src/image_processor.rs /Users/ysrmacbook/okulfotoeditor/src/main.rs /Users/ysrmacbook/okulfotoeditor/src/ocr.rs
