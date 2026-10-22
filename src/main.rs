@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod icons;
 mod image_processor;
 mod ocr;
@@ -52,6 +54,7 @@ struct AppIcons {
     target: TextureHandle,
     play: TextureHandle,
     export: TextureHandle,
+    open_folder: TextureHandle,
     zoom_in: TextureHandle,
     zoom_out: TextureHandle,
     reset: TextureHandle,
@@ -74,6 +77,7 @@ impl AppIcons {
             target: load_32("icon_target", icons::create_target_icon_32()),
             play: load_32("icon_play", icons::create_play_icon_32()),
             export: load_32("icon_export", icons::create_export_icon_32()),
+            open_folder: load_32("icon_open_folder", icons::create_open_folder_icon_32()),
             zoom_in: load_32("icon_zoom_in", icons::create_zoom_in_icon_32()),
             zoom_out: load_32("icon_zoom_out", icons::create_zoom_out_icon_32()),
             reset: load_32("icon_reset", icons::create_reset_icon_32()),
@@ -86,9 +90,73 @@ impl AppIcons {
     }
 }
 
+/// Kaydedilen klasörü işletim sisteminin dosya gezgininde açıp gösterir
+fn open_folder_in_explorer(path: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(path)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg(path)
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn();
+    }
+}
+
+/// Uygulama arayüzünü derin siyah (black) modern temaya geçirir
+fn apply_black_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+
+    // Derin siyah arka planlar
+    visuals.dark_mode = true;
+    visuals.panel_fill = Color32::from_rgb(14, 14, 16);
+    visuals.window_fill = Color32::from_rgb(18, 18, 20);
+    visuals.extreme_bg_color = Color32::from_rgb(10, 10, 12);
+    visuals.faint_bg_color = Color32::from_rgb(22, 22, 26);
+    visuals.code_bg_color = Color32::from_rgb(20, 20, 24);
+
+    // Etkileşim bileşenleri ve renk stilleri
+    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(22, 22, 26);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(42, 42, 48));
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(210, 210, 210));
+
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(28, 28, 34);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(52, 52, 60));
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(225, 225, 225));
+
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(44, 44, 52);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(85, 85, 95));
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+
+    visuals.widgets.active.bg_fill = Color32::from_rgb(58, 58, 68);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(120, 120, 140));
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+
+    visuals.widgets.open.bg_fill = Color32::from_rgb(32, 32, 38);
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 70));
+
+    // Seçim ve kenarlıklar
+    visuals.selection.bg_fill = Color32::from_rgb(26, 80, 145);
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(80, 170, 255));
+    visuals.window_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(45, 45, 52));
+
+    ctx.set_visuals(visuals);
+}
+
 struct OkulFotoApp {
     source_folder: Option<PathBuf>,
     target_folder: Option<PathBuf>,
+    last_exported_folder: Option<PathBuf>,
+    theme_applied: bool,
     is_processing: bool,
     progress_current: usize,
     progress_total: usize,
@@ -118,6 +186,8 @@ impl Default for OkulFotoApp {
         Self {
             source_folder: None,
             target_folder: None,
+            last_exported_folder: None,
+            theme_applied: false,
             is_processing: false,
             progress_current: 0,
             progress_total: 0,
@@ -345,12 +415,22 @@ impl OkulFotoApp {
             }
         }
 
-        self.status_text = format!("✅ {} adet e-Okul fotoğrafı kaydedildi -> {:?}", saved_count, dest);
+        if saved_count > 0 {
+            self.last_exported_folder = Some(dest.clone());
+            self.status_text = format!("✅ {} adet e-Okul fotoğrafı kaydedildi -> {:?}", saved_count, dest);
+        } else {
+            self.status_text = "⚠️ Dışa aktarılacak seçili fotoğraf kaydedilemedi!".to_string();
+        }
     }
 }
 
 impl eframe::App for OkulFotoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.theme_applied {
+            apply_black_theme(ctx);
+            self.theme_applied = true;
+        }
+
         // Arka plan iş parçacığından gelen verileri al
         if let Some(ref rx) = self.rx {
             while let Ok(msg) = rx.try_recv() {
@@ -448,7 +528,7 @@ impl eframe::App for OkulFotoApp {
                 if let Some(ref path) = self.source_folder {
                     ui.label(RichText::new(path.to_string_lossy()).small());
                 } else {
-                    ui.label(RichText::new("Kaynak klasör seçilmedi").color(Color32::DARK_GRAY).small());
+                    ui.label(RichText::new("Kaynak klasör seçilmedi").color(Color32::from_rgb(140, 140, 150)).small());
                 }
 
                 ui.separator();
@@ -463,7 +543,7 @@ impl eframe::App for OkulFotoApp {
                 if let Some(ref path) = self.target_folder {
                     ui.label(RichText::new(path.to_string_lossy()).small());
                 } else {
-                    ui.label(RichText::new("Hedef klasör seçilmedi").color(Color32::DARK_GRAY).small());
+                    ui.label(RichText::new("Hedef klasör seçilmedi").color(Color32::from_rgb(140, 140, 150)).small());
                 }
             });
 
@@ -489,12 +569,12 @@ impl eframe::App for OkulFotoApp {
                 }
 
                 ui.separator();
-                ui.label(RichText::new(format!("(e-Okul: 20-150 KB • Aktif: {} - {} KB)", self.min_kb, self.max_kb)).small().color(Color32::GRAY));
+                ui.label(RichText::new(format!("(e-Okul: 20-150 KB • Aktif: {} - {} KB)", self.min_kb, self.max_kb)).small().color(Color32::from_rgb(160, 160, 170)));
             });
 
             ui.add_space(6.0);
 
-            // 3. Satır: İşlemi Başlat ve Dışa Aktar (32x32 İkonlu Butonlar)
+            // 3. Satır: İşlemi Başlat, Dışa Aktar ve Kaydedilen Klasörü Aç (32x32 İkonlu Butonlar)
             ui.horizontal(|ui| {
                 let start_btn = egui::Button::image_and_text(&icons.play, RichText::new(" İşlemi Başlat").size(13.0).strong())
                     .min_size(Vec2::new(145.0, 42.0));
@@ -506,7 +586,7 @@ impl eframe::App for OkulFotoApp {
                 let btn_label = format!(" Seçilenleri Kaydet ({}/{})", inc_count, self.photos.len());
                 let export_btn = egui::Button::image_and_text(
                     &icons.export,
-                    RichText::new(btn_label).size(13.0).strong().color(Color32::LIGHT_GREEN),
+                    RichText::new(btn_label).size(13.0).strong().color(Color32::from_rgb(110, 225, 140)),
                 )
                 .min_size(Vec2::new(195.0, 42.0));
 
@@ -514,11 +594,24 @@ impl eframe::App for OkulFotoApp {
                     self.export_all();
                 }
 
+                // Seçilenler kaydedildikten sonra kaydedilen klasörü açmak için buton
+                if let Some(ref saved_dir) = self.last_exported_folder {
+                    let open_btn = egui::Button::image_and_text(
+                        &icons.open_folder,
+                        RichText::new(" Klasörü Göster").size(13.0).strong().color(Color32::from_rgb(100, 205, 255)),
+                    )
+                    .min_size(Vec2::new(165.0, 42.0));
+
+                    if ui.add(open_btn).on_hover_text("Kaydedilen fotoğrafların bulunduğu klasörü dosya gezgininde aç ve göster").clicked() {
+                        open_folder_in_explorer(saved_dir);
+                    }
+                }
+
                 if self.is_processing {
                     ui.spinner();
                 }
 
-                ui.label(RichText::new(&self.status_text).color(Color32::LIGHT_BLUE));
+                ui.label(RichText::new(&self.status_text).color(Color32::from_rgb(130, 200, 255)));
             });
 
             if self.is_processing || self.progress_total > 0 {
@@ -703,7 +796,7 @@ impl eframe::App for OkulFotoApp {
 
                             // Boyama (Vesikalık Önizlemesi)
                             let v_painter = ui.painter_at(v_rect);
-                            v_painter.rect_filled(v_rect, 4.0, Color32::from_rgb(240, 240, 240));
+                            v_painter.rect_filled(v_rect, 4.0, Color32::from_rgb(20, 20, 24));
 
                             if let Some(ref tex) = photo.preview_texture {
                                 v_painter.image(
@@ -717,9 +810,9 @@ impl eframe::App for OkulFotoApp {
                                 v_rect,
                                 4.0,
                                 if v_response.hovered() || v_response.dragged() {
-                                    egui::Stroke::new(2.0_f32, Color32::LIGHT_BLUE)
+                                    egui::Stroke::new(2.0_f32, Color32::from_rgb(70, 160, 255))
                                 } else {
-                                    egui::Stroke::new(1.0_f32, Color32::DARK_GRAY)
+                                    egui::Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 70))
                                 },
                             );
 
@@ -811,12 +904,19 @@ impl eframe::App for OkulFotoApp {
                                 let is_inc = self.photos[i].is_included;
                                 let frame = egui::Frame::group(ui.style())
                                     .inner_margin(6.0)
-                                    .stroke(if is_selected {
-                                        egui::Stroke::new(2.5_f32, Color32::LIGHT_BLUE)
+                                    .fill(if is_selected {
+                                        Color32::from_rgb(20, 36, 56)
                                     } else if !is_inc {
-                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(70, 70, 70))
+                                        Color32::from_rgb(18, 18, 20)
                                     } else {
-                                        egui::Stroke::new(1.0_f32, Color32::DARK_GRAY)
+                                        Color32::from_rgb(26, 26, 30)
+                                    })
+                                    .stroke(if is_selected {
+                                        egui::Stroke::new(2.5_f32, Color32::from_rgb(70, 160, 255))
+                                    } else if !is_inc {
+                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(45, 45, 50))
+                                    } else {
+                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 58, 65))
                                     });
 
                                 frame.show(ui, |ui| {
@@ -904,18 +1004,40 @@ impl eframe::App for OkulFotoApp {
     }
 }
 
+fn load_app_icon() -> Option<egui::IconData> {
+    let icon_bytes = include_bytes!("../app_icon.png");
+    let img = image::load_from_memory(icon_bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(egui::IconData {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> Result<(), eframe::Error> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1040.0, 720.0])
+        .with_min_inner_size([800.0, 560.0])
+        .with_title("MEB e-Okul Öğrenci Fotoğrafı Hazırlama ve İsimlendirme (Zoom & Pan)");
+
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1040.0, 720.0])
-            .with_min_inner_size([800.0, 560.0])
-            .with_title("MEB e-Okul Öğrenci Fotoğrafı Hazırlama ve İsimlendirme (Zoom & Pan)"),
+        viewport,
         ..Default::default()
     };
 
     eframe::run_native(
         "okulfotoeditor",
         native_options,
-        Box::new(|_cc| Ok(Box::new(OkulFotoApp::default()))),
+        Box::new(|cc| {
+            apply_black_theme(&cc.egui_ctx);
+            Ok(Box::new(OkulFotoApp::default()))
+        }),
     )
 }
+

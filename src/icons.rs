@@ -256,3 +256,80 @@ pub fn create_arrow_right_32() -> RgbaImage {
     }
     img
 }
+
+/// 32x32 Açık Klasör İkonu (Kaydedilen Klasörü Aç / Göster)
+pub fn create_open_folder_icon_32() -> RgbaImage {
+    let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
+    let tab = Rgba([245, 124, 0, 255]);
+    let back = Rgba([255, 167, 38, 255]);
+    let paper = Rgba([240, 244, 248, 255]);
+    let paper_line = Rgba([144, 202, 249, 255]);
+    let front = Rgba([255, 202, 40, 255]);
+    let front_dark = Rgba([255, 179, 0, 255]);
+    let badge_bg = Rgba([46, 125, 50, 255]); // Zümrüt yeşili rozet
+    let white = Rgba([255, 255, 255, 255]);
+
+    // Klasör Arka Sekmesi
+    for y in 4..9 {
+        for x in 4..14 {
+            img.put_pixel(x, y, tab);
+        }
+    }
+    // Klasör Arka Gövdesi
+    for y in 8..23 {
+        for x in 4..28 {
+            img.put_pixel(x, y, back);
+        }
+    }
+
+    // İçinden çıkan doküman / fotoğraf kağıdı (Açık olduğunu belli eden beyaz kağıt)
+    for y in 7..17 {
+        for x in 8..24 {
+            img.put_pixel(x, y, paper);
+        }
+    }
+    // Kağıt üzerindeki minik detay çizgileri
+    for x in 10..22 {
+        img.put_pixel(x, 10, paper_line);
+        img.put_pixel(x, 13, paper_line);
+    }
+
+    // Açık Ön Kapak (Eğimli perspektif)
+    for y in 14..28 {
+        let offset = (y as i32 - 14) / 2;
+        let start_x = (3 - offset).max(1) as u32;
+        let end_x = (27 + offset).min(30) as u32;
+        for x in start_x..=end_x {
+            if y == 14 || x == start_x || x == end_x {
+                img.put_pixel(x, y, front_dark);
+            } else {
+                img.put_pixel(x, y, front);
+            }
+        }
+    }
+
+    // Sağ alt köşede yeşil daire rozet (Klasörü Aç / Göster sembolü)
+    for y in 18..30 {
+        for x in 18..30 {
+            let dx = x as f32 - 24.0;
+            let dy = y as f32 - 24.0;
+            if dx * dx + dy * dy <= 5.2 * 5.2 {
+                img.put_pixel(x, y, badge_bg);
+            }
+        }
+    }
+    // Rozet içi yukarı/dışarı bakan beyaz ok
+    for y in 22..27 {
+        for x in 23..26 {
+            img.put_pixel(x, y, white);
+        }
+    }
+    for i in 0..4 {
+        for x in (24 - i)..=(24 + i) {
+            img.put_pixel(x as u32, (22 - i) as u32, white);
+        }
+    }
+
+    img
+}
+
