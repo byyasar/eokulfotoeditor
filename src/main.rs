@@ -5,6 +5,7 @@ mod image_processor;
 mod ocr;
 
 use eframe::egui::{self, Color32, RichText, TextureHandle, Vec2};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -58,6 +59,7 @@ struct AppIcons {
     zoom_in: TextureHandle,
     zoom_out: TextureHandle,
     reset: TextureHandle,
+    #[allow(dead_code)]
     close: TextureHandle,
     arrow_up: TextureHandle,
     arrow_down: TextureHandle,
@@ -164,6 +166,8 @@ struct OkulFotoApp {
 
     photos: Vec<ProcessedPhoto>,
     selected_index: Option<usize>,
+    selected_indices: BTreeSet<usize>,
+    last_clicked_index: Option<usize>,
 
     // Detay Paneli: Zoom ve Pan (Kaydırma) Kontrolleri
     zoom_level: f32,
@@ -194,6 +198,8 @@ impl Default for OkulFotoApp {
             status_text: "Lütfen Kaynak ve Hedef Klasörleri seçin.".to_string(),
             photos: Vec::new(),
             selected_index: None,
+            selected_indices: BTreeSet::new(),
+            last_clicked_index: None,
             zoom_level: 1.0,
             pan_offset: Vec2::ZERO,
             jpeg_quality: 95,
@@ -206,6 +212,121 @@ impl Default for OkulFotoApp {
 }
 
 impl OkulFotoApp {
+    /// Tüm fotoğrafları topluca seçer
+    fn select_all_photos(&mut self) {
+        self.selected_indices = (0..self.photos.len()).collect();
+        if !self.photos.is_empty() {
+            if self.selected_index.is_none() || !self.selected_indices.contains(&self.selected_index.unwrap()) {
+                self.selected_index = Some(0);
+            }
+            self.last_clicked_index = Some(0);
+        }
+    }
+
+    /// Tüm fotoğraf seçimlerini temizler (Sağ paneldeki inceleme açık kalır)
+    fn clear_selection(&mut self) {
+        self.selected_indices.clear();
+        self.last_clicked_index = None;
+    }
+
+    /// Seçili fotoğrafları listeden siler (Delete tuşu veya silme butonu)
+    fn delete_selected_photos(&mut self) {
+        if self.selected_indices.is_empty() {
+            return;
+        }
+        let count = self.selected_indices.len();
+        // BTreeSet küçükten büyüğe sıralıdır; tersten silmek indislerin kaymasını önler
+        for &idx in self.selected_indices.iter().rev() {
+            if idx < self.photos.len() {
+                self.photos.remove(idx);
+            }
+        }
+        self.selected_indices.clear();
+        self.last_clicked_index = None;
+
+        // Sağ panelin kaybolmaması için listede kalan ilk fotoğrafı aktif yap
+        if !self.photos.is_empty() {
+            self.selected_index = Some(0);
+            self.selected_indices.insert(0);
+            self.last_clicked_index = Some(0);
+        } else {
+            self.selected_index = None;
+        }
+        self.status_text = format!("🗑️ {} adet fotoğraf listeden silindi.", count);
+    }
+
+    /// Tek bir fotoğrafı listeden siler
+    fn delete_photo(&mut self, idx: usize) {
+        if idx < self.photos.len() {
+            self.photos.remove(idx);
+            let mut new_set = BTreeSet::new();
+            for &s in &self.selected_indices {
+                if s < idx {
+                    new_set.insert(s);
+                } else if s > idx {
+                    new_set.insert(s - 1);
+                }
+            }
+            self.selected_indices = new_set;
+
+            // Sağ panelin kaybolmaması için geçerli bir fotoğrafa geç
+            if self.photos.is_empty() {
+                self.selected_index = None;
+            } else if self.selected_index == Some(idx) {
+                let next_idx = idx.min(self.photos.len().saturating_sub(1));
+                self.selected_index = Some(next_idx);
+            } else if let Some(sel) = self.selected_index {
+                if sel > idx {
+                    self.selected_index = Some(sel - 1);
+                }
+            }
+
+            if self.last_clicked_index == Some(idx) {
+                self.last_clicked_index = self.selected_index;
+            } else if let Some(lci) = self.last_clicked_index {
+                if lci > idx {
+                    self.last_clicked_index = Some(lci - 1);
+                }
+            }
+        }
+    }
+
+    /// Fotoğraf kartına veya önizlemesine tıklandığında seçim durumunu yönetir
+    fn handle_photo_click(&mut self, i: usize, ctrl_or_cmd: bool, shift: bool) {
+        if shift {
+            if let Some(last) = self.last_clicked_index {
+                let start = last.min(i);
+                let end = last.max(i);
+                for idx in start..=end {
+                    if idx < self.photos.len() {
+                        self.selected_indices.insert(idx);
+                    }
+                }
+            } else {
+                self.selected_indices.insert(i);
+            }
+            self.selected_index = Some(i);
+        } else if ctrl_or_cmd {
+            if self.selected_indices.contains(&i) {
+                self.selected_indices.remove(&i);
+                if self.selected_index == Some(i) {
+                    self.selected_index = self.selected_indices.iter().copied().next_back();
+                }
+            } else {
+                self.selected_indices.insert(i);
+                self.selected_index = Some(i);
+            }
+            self.last_clicked_index = Some(i);
+        } else {
+            self.selected_indices.clear();
+            self.selected_indices.insert(i);
+            self.selected_index = Some(i);
+            self.last_clicked_index = Some(i);
+            self.zoom_level = 1.0;
+            self.pan_offset = Vec2::ZERO;
+        }
+    }
+
     fn start_processing(&mut self) {
         let src = match &self.source_folder {
             Some(p) => p.clone(),
@@ -239,6 +360,8 @@ impl OkulFotoApp {
 
         self.photos.clear();
         self.selected_index = None;
+        self.selected_indices.clear();
+        self.last_clicked_index = None;
         self.is_processing = true;
         self.progress_current = 0;
         self.progress_total = files.len();
@@ -431,6 +554,31 @@ impl eframe::App for OkulFotoApp {
             self.theme_applied = true;
         }
 
+        // Klavye Kısayolları (Metin giriş kutusu aktif değilken çalışır)
+        if !ctx.wants_keyboard_input() {
+            // Delete veya Backspace tuşu ile seçilen fotoğrafları sil
+            let delete_pressed = ctx.input(|i| {
+                i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
+            });
+            if delete_pressed && !self.selected_indices.is_empty() {
+                self.delete_selected_photos();
+            }
+
+            // Ctrl+A / Cmd+A ile tüm fotoğrafları seç
+            let select_all_pressed = ctx.input(|i| {
+                (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::A)
+            });
+            if select_all_pressed && !self.photos.is_empty() {
+                self.select_all_photos();
+            }
+
+            // Escape tuşu ile seçimi kaldır
+            let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            if esc_pressed && !self.selected_indices.is_empty() {
+                self.clear_selection();
+            }
+        }
+
         // Arka plan iş parçacığından gelen verileri al
         if let Some(ref rx) = self.rx {
             while let Ok(msg) = rx.try_recv() {
@@ -483,6 +631,13 @@ impl eframe::App for OkulFotoApp {
                             current_crop: crop_rect,
                             is_included: true,
                         });
+
+                        // İlk fotoğraf geldiğinde sağ paneli hemen aktif et
+                        if self.selected_index.is_none() {
+                            self.selected_index = Some(0);
+                            self.selected_indices.insert(0);
+                            self.last_clicked_index = Some(0);
+                        }
                     }
                     WorkerMessage::Done => {
                         self.is_processing = false;
@@ -631,245 +786,286 @@ impl eframe::App for OkulFotoApp {
             self.reencode_all();
         }
 
-        // --- SAĞ DETAY PANELİ: Zoom, Pan (Kaydırma) ve Kadraj Ayarlama ---
-        if let Some(idx) = self.selected_index {
-            if idx < self.photos.len() {
-                let mut crop_action = None;
+        // --- SAĞ PANEL: Fotoğraf İnceleme & Zoom (Sabit, Kalıcı, İki Parçalı Bölünmüş Tasarım) ---
+        let mut crop_action = None;
+        let screen_width = ctx.screen_rect().width();
+        let target_panel_width = (screen_width * 0.42).clamp(360.0, 560.0);
 
-                egui::SidePanel::right("detail_panel")
-                    .default_width(380.0)
-                    .min_width(340.0)
-                    .max_width(520.0)
-                    .show(ctx, |ui| {
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.heading(RichText::new("🔍 Fotoğraf İnceleme & Zoom").size(16.0).strong());
+        egui::SidePanel::right("detail_panel")
+            .resizable(true)
+            .default_width(target_panel_width)
+            .min_width(340.0)
+            .max_width((screen_width * 0.65).max(380.0))
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+
+                // Başlık Alanı (Panel Kalıcıdır, Kapanmaz)
+                ui.horizontal(|ui| {
+                    ui.heading(RichText::new("🔍 Fotoğraf İnceleme & Zoom").size(16.0).strong());
+
+                    if let Some(idx) = self.selected_index {
+                        if idx < self.photos.len() {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let close_btn = egui::Button::image(&icons.close).min_size(Vec2::new(32.0, 32.0));
-                                if ui.add(close_btn).on_hover_text("Detay Panelini Kapat").clicked() {
-                                    self.selected_index = None;
+                                ui.label(
+                                    RichText::new(format!("Fotoğraf: {} / {}", idx + 1, self.photos.len()))
+                                        .size(12.0)
+                                        .color(Color32::from_rgb(110, 190, 255))
+                                        .strong(),
+                                );
+                            });
+                        }
+                    }
+                });
+                ui.separator();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if let Some(idx) = self.selected_index {
+                        if idx < self.photos.len() {
+                            let photo = &mut self.photos[idx];
+
+                            // --- 1. ÖĞRENCİ NUMARASI DÜZENLEME & DETAY BİLGİSİ ---
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Öğrenci Numarası:").strong());
+                                ui.add(egui::TextEdit::singleline(&mut photo.student_number).desired_width(130.0));
+                            });
+                            ui.label(
+                                RichText::new(format!(
+                                    "Dosya: {:?} • Boyut: {:.1} KB",
+                                    photo.original_path.file_name().unwrap_or_default(),
+                                    photo.file_size_kb
+                                ))
+                                .small()
+                                .color(Color32::LIGHT_GRAY),
+                            );
+
+                            ui.add_space(6.0);
+                            ui.separator();
+
+                            // --- 2. ORİJİNAL FOTOĞRAFTA ZOOM & PAN (TAHTAYI OKUMA) ---
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("🔎 Tahta İnceleme (Zoom & Sürükle):").strong());
+                            });
+
+                            // Zoom Kontrol Butonları (32x32 İkonlu) ve Slider
+                            ui.horizontal(|ui| {
+                                let zout_btn = egui::Button::image(&icons.zoom_out).min_size(Vec2::new(32.0, 32.0));
+                                if ui.add(zout_btn).on_hover_text("Uzaklaştır").clicked() {
+                                    self.zoom_level = (self.zoom_level - 0.25).max(1.0);
+                                }
+
+                                ui.add(egui::Slider::new(&mut self.zoom_level, 1.0..=5.0).text("Zoom"));
+
+                                let zin_btn = egui::Button::image(&icons.zoom_in).min_size(Vec2::new(32.0, 32.0));
+                                if ui.add(zin_btn).on_hover_text("Yakınlaştır").clicked() {
+                                    self.zoom_level = (self.zoom_level + 0.25).min(5.0);
+                                }
+
+                                let rst_btn = egui::Button::image(&icons.reset).min_size(Vec2::new(32.0, 32.0));
+                                if ui.add(rst_btn).on_hover_text("Konumu ve Zoom'u Sıfırla").clicked() {
+                                    self.zoom_level = 1.0;
+                                    self.pan_offset = Vec2::ZERO;
                                 }
                             });
-                        });
-                        ui.separator();
 
-                        let photo = &mut self.photos[idx];
+                            ui.label(RichText::new("💡 İpucu: Fotoğrafı sol tık ile tutarak istediğiniz yöne kaydırabilir, tekerlekle yakınlaşabilirsiniz.").small().italics().color(Color32::GRAY));
 
-                        // --- 1. ÖĞRENCİ NUMARASI DÜZENLEME ---
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Öğrenci Numarası:").strong());
-                            ui.add(egui::TextEdit::singleline(&mut photo.student_number).desired_width(120.0));
-                        });
-                        ui.label(
-                            RichText::new(format!(
-                                "Boyut: {:.1} KB • Orijinal: {:?}",
-                                photo.file_size_kb,
-                                photo.original_path.file_name().unwrap_or_default()
-                            ))
-                            .small()
-                            .color(Color32::LIGHT_GRAY),
-                        );
+                            // Etkileşimli Zoom & Pan Görünüm Alanı (Tahta İnceleme)
+                            if let Some(ref orig_tex) = photo.original_preview_texture {
+                                let view_size = Vec2::new(ui.available_width(), 250.0);
+                                let (rect, response) = ui.allocate_exact_size(view_size, egui::Sense::drag());
 
-                        ui.add_space(8.0);
-                        ui.separator();
-
-                        // --- 2. ORİJİNAL FOTOĞRAFTA ZOOM & PAN (TAHTAYI OKUMA) ---
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("🔎 Tahta İnceleme (Zoom & Sürükle):").strong());
-                        });
-
-                        // Zoom Kontrol Butonları (32x32 İkonlu) ve Slider
-                        ui.horizontal(|ui| {
-                            let zout_btn = egui::Button::image(&icons.zoom_out).min_size(Vec2::new(32.0, 32.0));
-                            if ui.add(zout_btn).on_hover_text("Uzaklaştır").clicked() {
-                                self.zoom_level = (self.zoom_level - 0.25).max(1.0);
-                            }
-
-                            ui.add(egui::Slider::new(&mut self.zoom_level, 1.0..=5.0).text("Zoom"));
-
-                            let zin_btn = egui::Button::image(&icons.zoom_in).min_size(Vec2::new(32.0, 32.0));
-                            if ui.add(zin_btn).on_hover_text("Yakınlaştır").clicked() {
-                                self.zoom_level = (self.zoom_level + 0.25).min(5.0);
-                            }
-
-                            let rst_btn = egui::Button::image(&icons.reset).min_size(Vec2::new(32.0, 32.0));
-                            if ui.add(rst_btn).on_hover_text("Konumu ve Zoom'u Sıfırla").clicked() {
-                                self.zoom_level = 1.0;
-                                self.pan_offset = Vec2::ZERO;
-                            }
-                        });
-
-                        ui.label(RichText::new("💡 İpucu: Fotoğrafı farenin sol tuşuyla tutarak istediğiniz yöne kaydırabilirsiniz.").small().italics().color(Color32::GRAY));
-
-                        // Etkileşimli Zoom & Pan Görünüm Alanı (Tahta İnceleme)
-                        if let Some(ref orig_tex) = photo.original_preview_texture {
-                            let view_size = Vec2::new(ui.available_width(), 240.0);
-                            let (rect, response) = ui.allocate_exact_size(view_size, egui::Sense::drag());
-
-                            // Fare tekerleğiyle zoom
-                            if response.hovered() {
-                                let scroll = ui.input(|i| i.raw_scroll_delta.y);
-                                if scroll.abs() > 0.1 {
-                                    self.zoom_level = (self.zoom_level + scroll * 0.005).clamp(1.0, 5.0);
+                                // Fare tekerleğiyle zoom
+                                if response.hovered() {
+                                    let scroll = ui.input(|i| i.raw_scroll_delta.y);
+                                    if scroll.abs() > 0.1 {
+                                        self.zoom_level = (self.zoom_level + scroll * 0.005).clamp(1.0, 5.0);
+                                    }
                                 }
-                            }
 
-                            // Sürükleme (Pan) ile alanı kaydırma
-                            if response.dragged() {
-                                self.pan_offset += response.drag_delta();
-                            }
-
-                            // Sınırlandırma
-                            let max_pan = (self.zoom_level - 1.0) * 180.0;
-                            self.pan_offset.x = self.pan_offset.x.clamp(-max_pan, max_pan);
-                            self.pan_offset.y = self.pan_offset.y.clamp(-max_pan, max_pan);
-
-                            // Boyama (Painter) - En-Boy Oranı Korunarak (Aspect Fit)
-                            let painter = ui.painter_at(rect);
-                            painter.rect_filled(rect, 4.0, Color32::from_black_alpha(220));
-
-                            let tex_size = orig_tex.size_vec2();
-                            let aspect = (tex_size.x / tex_size.y).max(0.1);
-
-                            let mut fit_w = view_size.x;
-                            let mut fit_h = fit_w / aspect;
-                            if fit_h > view_size.y {
-                                fit_h = view_size.y;
-                                fit_w = fit_h * aspect;
-                            }
-
-                            let scaled_w = fit_w * self.zoom_level;
-                            let scaled_h = fit_h * self.zoom_level;
-
-                            let img_center = rect.center() + self.pan_offset;
-                            let img_rect = egui::Rect::from_center_size(img_center, Vec2::new(scaled_w, scaled_h));
-
-                            painter.image(
-                                orig_tex.id(),
-                                img_rect,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-                            painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, Color32::DARK_GRAY));
-                        }
-
-                        ui.add_space(8.0);
-                        ui.separator();
-
-                        // --- 3. e-OKUL KADRAJI (133x171) & İNTERAKTİF ZOOM/PAN ---
-                        ui.label(RichText::new("✂️ Vesikalık Kadrajı (133x171 - Zoom & Kaydır):").strong());
-                        ui.label(RichText::new("💡 Farenin sol tuşuyla tutarak kadrajı kaydırabilir, tekerlekle yakınlaşıp uzaklaşabilirsiniz.").small().italics().color(Color32::GRAY));
-
-                        ui.horizontal(|ui| {
-                            // Vesikalık İnteraktif Tuval (140 x 180 ~133:171)
-                            let v_w = 140.0_f32;
-                            let v_h = v_w * (171.0 / 133.0); // 180 px
-                            let v_size = Vec2::new(v_w, v_h);
-
-                            let (v_rect, v_response) = ui.allocate_exact_size(v_size, egui::Sense::drag());
-
-                            // 1. Vesikalık üzerinde sürükleyerek kadrajı kaydırma (Pan)
-                            if v_response.dragged() {
-                                let delta = v_response.drag_delta();
-                                if delta.length_sq() > 0.0 {
-                                    // Farenin hareket yönüne göre kadrajı kaydır
-                                    let factor = if let Some(ref orig) = photo.original_image {
-                                        orig.width() as f32 / v_w
-                                    } else {
-                                        3.0
-                                    };
-                                    let dx = (-delta.x * factor * 0.4).round() as i32;
-                                    let dy = (-delta.y * factor * 0.4).round() as i32;
-                                    crop_action = Some((dx, dy, 1.0));
+                                // Sürükleme (Pan) ile alanı kaydırma
+                                if response.dragged() {
+                                    self.pan_offset += response.drag_delta();
                                 }
-                            }
 
-                            // 2. Vesikalık üzerinde tekerlekle Zoom (Yakınlaş/Uzaklaş)
-                            if v_response.hovered() {
-                                let v_scroll = ui.input(|i| i.raw_scroll_delta.y);
-                                if v_scroll > 0.5 {
-                                    crop_action = Some((0, 0, 0.95)); // Yüze yaklaş
-                                } else if v_scroll < -0.5 {
-                                    crop_action = Some((0, 0, 1.05)); // Uzaklaş
+                                // Sınırlandırma
+                                let max_pan = (self.zoom_level - 1.0) * 180.0;
+                                self.pan_offset.x = self.pan_offset.x.clamp(-max_pan, max_pan);
+                                self.pan_offset.y = self.pan_offset.y.clamp(-max_pan, max_pan);
+
+                                // Boyama (Painter) - En-Boy Oranı Korunarak (Aspect Fit)
+                                let painter = ui.painter_at(rect);
+                                painter.rect_filled(rect, 4.0, Color32::from_black_alpha(220));
+
+                                let tex_size = orig_tex.size_vec2();
+                                let aspect = (tex_size.x / tex_size.y).max(0.1);
+
+                                let mut fit_w = view_size.x;
+                                let mut fit_h = fit_w / aspect;
+                                if fit_h > view_size.y {
+                                    fit_h = view_size.y;
+                                    fit_w = fit_h * aspect;
                                 }
-                            }
 
-                            // Boyama (Vesikalık Önizlemesi)
-                            let v_painter = ui.painter_at(v_rect);
-                            v_painter.rect_filled(v_rect, 4.0, Color32::from_rgb(20, 20, 24));
+                                let scaled_w = fit_w * self.zoom_level;
+                                let scaled_h = fit_h * self.zoom_level;
 
-                            if let Some(ref tex) = photo.preview_texture {
-                                v_painter.image(
-                                    tex.id(),
-                                    v_rect,
+                                let img_center = rect.center() + self.pan_offset;
+                                let img_rect = egui::Rect::from_center_size(img_center, Vec2::new(scaled_w, scaled_h));
+
+                                painter.image(
+                                    orig_tex.id(),
+                                    img_rect,
                                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                                     Color32::WHITE,
                                 );
+                                painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, Color32::DARK_GRAY));
                             }
-                            v_painter.rect_stroke(
-                                v_rect,
-                                4.0,
-                                if v_response.hovered() || v_response.dragged() {
-                                    egui::Stroke::new(2.0_f32, Color32::from_rgb(70, 160, 255))
-                                } else {
-                                    egui::Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 70))
-                                },
-                            );
 
                             ui.add_space(8.0);
+                            ui.separator();
 
-                            // Butonlarla da hassas ayar yapabilme (32x32 İkonlar)
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new("Kadraj Ayarı:").small());
-                                ui.horizontal(|ui| {
-                                    let btn_up = egui::Button::image(&icons.arrow_up).min_size(Vec2::new(32.0, 32.0));
-                                    if ui.add(btn_up).on_hover_text("Yukarı Kaydır").clicked() {
-                                        crop_action = Some((0, -20, 1.0));
-                                    }
+                            // --- 3. e-OKUL KADRAJI (133x171) & İNTERAKTİF ZOOM/PAN ---
+                            ui.label(RichText::new("✂️ Vesikalık Kadrajı (133x171 - Zoom & Kaydır):").strong());
+                            ui.label(RichText::new("💡 Farenin sol tuşuyla tutarak kadrajı kaydırabilir, tekerlekle yakınlaşıp uzaklaşabilirsiniz.").small().italics().color(Color32::GRAY));
 
-                                    let btn_down = egui::Button::image(&icons.arrow_down).min_size(Vec2::new(32.0, 32.0));
-                                    if ui.add(btn_down).on_hover_text("Aşağı Kaydır").clicked() {
-                                        crop_action = Some((0, 20, 1.0));
-                                    }
+                            ui.horizontal(|ui| {
+                                // Vesikalık İnteraktif Tuval (140 x 180 ~133:171)
+                                let v_w = 140.0_f32;
+                                let v_h = v_w * (171.0 / 133.0); // 180 px
+                                let v_size = Vec2::new(v_w, v_h);
 
-                                    let btn_left = egui::Button::image(&icons.arrow_left).min_size(Vec2::new(32.0, 32.0));
-                                    if ui.add(btn_left).on_hover_text("Sola Kaydır").clicked() {
-                                        crop_action = Some((-20, 0, 1.0));
-                                    }
+                                let (v_rect, v_response) = ui.allocate_exact_size(v_size, egui::Sense::drag());
 
-                                    let btn_right = egui::Button::image(&icons.arrow_right).min_size(Vec2::new(32.0, 32.0));
-                                    if ui.add(btn_right).on_hover_text("Sağa Kaydır").clicked() {
-                                        crop_action = Some((20, 0, 1.0));
+                                // 1. Vesikalık üzerinde sürükleyerek kadrajı kaydırma (Pan)
+                                if v_response.dragged() {
+                                    let delta = v_response.drag_delta();
+                                    if delta.length_sq() > 0.0 {
+                                        let factor = if let Some(ref orig) = photo.original_image {
+                                            orig.width() as f32 / v_w
+                                        } else {
+                                            3.0
+                                        };
+                                        let dx = (-delta.x * factor * 0.4).round() as i32;
+                                        let dy = (-delta.y * factor * 0.4).round() as i32;
+                                        crop_action = Some((dx, dy, 1.0));
                                     }
-                                });
+                                }
 
-                                ui.add_space(4.0);
-                                ui.horizontal(|ui| {
-                                    let btn_zin = egui::Button::image_and_text(&icons.zoom_in, " Yakınlaş").min_size(Vec2::new(88.0, 34.0));
-                                    if ui.add(btn_zin).on_hover_text("Kadrajı Büyüt / Yüze Yaklaş").clicked() {
-                                        crop_action = Some((0, 0, 0.92));
+                                // 2. Vesikalık üzerinde tekerlekle Zoom (Yakınlaş/Uzaklaş)
+                                if v_response.hovered() {
+                                    let v_scroll = ui.input(|i| i.raw_scroll_delta.y);
+                                    if v_scroll > 0.5 {
+                                        crop_action = Some((0, 0, 0.95)); // Yüze yaklaş
+                                    } else if v_scroll < -0.5 {
+                                        crop_action = Some((0, 0, 1.05)); // Uzaklaş
                                     }
+                                }
 
-                                    let btn_zout = egui::Button::image_and_text(&icons.zoom_out, " Uzaklaş").min_size(Vec2::new(88.0, 34.0));
-                                    if ui.add(btn_zout).on_hover_text("Kadrajı Küçült / Uzaklaş").clicked() {
-                                        crop_action = Some((0, 0, 1.08));
-                                    }
+                                // Boyama (Vesikalık Önizlemesi)
+                                let v_painter = ui.painter_at(v_rect);
+                                v_painter.rect_filled(v_rect, 4.0, Color32::from_rgb(20, 20, 24));
+
+                                if let Some(ref tex) = photo.preview_texture {
+                                    v_painter.image(
+                                        tex.id(),
+                                        v_rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        Color32::WHITE,
+                                    );
+                                }
+                                v_painter.rect_stroke(
+                                    v_rect,
+                                    4.0,
+                                    if v_response.hovered() || v_response.dragged() {
+                                        egui::Stroke::new(2.0_f32, Color32::from_rgb(70, 160, 255))
+                                    } else {
+                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 70))
+                                    },
+                                );
+
+                                ui.add_space(8.0);
+
+                                // Butonlarla da hassas ayar yapabilme (32x32 İkonlar)
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new("Kadraj Ayarı:").small());
+                                    ui.horizontal(|ui| {
+                                        let btn_up = egui::Button::image(&icons.arrow_up).min_size(Vec2::new(32.0, 32.0));
+                                        if ui.add(btn_up).on_hover_text("Yukarı Kaydır").clicked() {
+                                            crop_action = Some((0, -20, 1.0));
+                                        }
+
+                                        let btn_down = egui::Button::image(&icons.arrow_down).min_size(Vec2::new(32.0, 32.0));
+                                        if ui.add(btn_down).on_hover_text("Aşağı Kaydır").clicked() {
+                                            crop_action = Some((0, 20, 1.0));
+                                        }
+
+                                        let btn_left = egui::Button::image(&icons.arrow_left).min_size(Vec2::new(32.0, 32.0));
+                                        if ui.add(btn_left).on_hover_text("Sola Kaydır").clicked() {
+                                            crop_action = Some((-20, 0, 1.0));
+                                        }
+
+                                        let btn_right = egui::Button::image(&icons.arrow_right).min_size(Vec2::new(32.0, 32.0));
+                                        if ui.add(btn_right).on_hover_text("Sağa Kaydır").clicked() {
+                                            crop_action = Some((20, 0, 1.0));
+                                        }
+                                    });
+
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let btn_zin = egui::Button::image_and_text(&icons.zoom_in, " Yakınlaş").min_size(Vec2::new(88.0, 34.0));
+                                        if ui.add(btn_zin).on_hover_text("Kadrajı Büyüt / Yüze Yaklaş").clicked() {
+                                            crop_action = Some((0, 0, 0.92));
+                                        }
+
+                                        let btn_zout = egui::Button::image_and_text(&icons.zoom_out, " Uzaklaş").min_size(Vec2::new(88.0, 34.0));
+                                        if ui.add(btn_zout).on_hover_text("Kadrajı Küçült / Uzaklaş").clicked() {
+                                            crop_action = Some((0, 0, 1.08));
+                                        }
+                                    });
                                 });
                             });
-                        });
 
-                        ui.add_space(8.0);
-
-                        if crop_action.is_some() {
-                            ctx.request_repaint();
+                            ui.add_space(10.0);
+                        } else {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(60.0);
+                                ui.label(RichText::new("🔍 Fotoğraf İnceleme").size(16.0).color(Color32::GRAY));
+                                ui.label(RichText::new("İncelemek için soldaki galeriden bir fotoğrafa tıklayın.").small().color(Color32::DARK_GRAY));
+                            });
                         }
-                    });
+                    } else if !self.photos.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(80.0);
+                            ui.label(RichText::new("🔍 Fotoğraf İnceleme & Zoom").size(18.0).color(Color32::LIGHT_GRAY));
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Soldaki listeden bir fotoğrafa tıklayarak burada detaylı zoom yapabilirsiniz.").color(Color32::GRAY));
+                            ui.add_space(12.0);
+                            if ui.button(RichText::new("👉 İlk Fotoğrafı İncele").size(13.0)).clicked() {
+                                self.selected_index = Some(0);
+                                self.selected_indices.insert(0);
+                                self.last_clicked_index = Some(0);
+                            }
+                        });
+                    } else {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(80.0);
+                            ui.label(RichText::new("🖼️ Fotoğraf İnceleme & Zoom").size(18.0).strong().color(Color32::from_rgb(120, 140, 170)));
+                            ui.add_space(10.0);
+                            ui.label(RichText::new("Fotoğraflar içe aktarıldığında bu panelde:\n\n• Tahtadaki numarayı yüksek zoom ile okuyabilir,\n• e-Okul için vesikalık kadrajını kaydırıp ayarlayabilirsiniz.")
+                                .color(Color32::from_rgb(140, 140, 150))
+                                .italics());
+                        });
+                    }
+                });
 
-                // Panelin dışında borrow serbest olduğunda kadrajı güncelle
-                if let Some((dx, dy, sc)) = crop_action {
-                    self.adjust_crop_and_update(ctx, dx, dy, sc);
+                if crop_action.is_some() {
+                    ctx.request_repaint();
                 }
-            }
+            });
+
+        // Panelin dışında borrow serbest olduğunda kadrajı güncelle
+        if let Some((dx, dy, sc)) = crop_action {
+            self.adjust_crop_and_update(ctx, dx, dy, sc);
         }
 
         // --- MERKEZ PANEL: Kaydırılabilir Kart Izgarası (Grid View) ---
@@ -885,121 +1081,238 @@ impl eframe::App for OkulFotoApp {
                 return;
             }
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let available_width = ui.available_width();
-                let card_width = 155.0;
-                let columns = ((available_width / card_width).floor() as usize).max(1);
+            // ÜST SEÇİM VE İŞLEM ARAÇ ÇUBUĞU (Pencere daraldığında butonlar alt satıra geçer, taşma yapmaz)
+            ui.horizontal_wrapped(|ui| {
+                let total_photos = self.photos.len();
+                let sel_count = self.selected_indices.len();
 
-                let mut to_remove = None;
+                ui.label(
+                    RichText::new(format!("📸 Toplam: {}", total_photos))
+                        .size(13.0)
+                        .strong(),
+                );
 
-                egui::Grid::new("photos_grid")
-                    .spacing(Vec2::new(14.0, 14.0))
-                    .show(ui, |ui| {
-                        let mut col = 0;
-                        let len = self.photos.len();
+                if sel_count > 0 {
+                    ui.label(
+                        RichText::new(format!("• {} Seçili", sel_count))
+                            .size(13.0)
+                            .color(Color32::from_rgb(80, 180, 255))
+                            .strong(),
+                    );
+                }
 
-                        for i in 0..len {
-                            ui.vertical(|ui| {
-                                let is_selected = self.selected_index == Some(i);
-                                let is_inc = self.photos[i].is_included;
-                                let frame = egui::Frame::group(ui.style())
-                                    .inner_margin(6.0)
-                                    .fill(if is_selected {
-                                        Color32::from_rgb(20, 36, 56)
-                                    } else if !is_inc {
-                                        Color32::from_rgb(18, 18, 20)
-                                    } else {
-                                        Color32::from_rgb(26, 26, 30)
-                                    })
-                                    .stroke(if is_selected {
-                                        egui::Stroke::new(2.5_f32, Color32::from_rgb(70, 160, 255))
-                                    } else if !is_inc {
-                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(45, 45, 50))
-                                    } else {
-                                        egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 58, 65))
-                                    });
+                ui.separator();
 
-                                frame.show(ui, |ui| {
-                                    // 1. SOL ÜST CHECKBOX & SAĞ ÜST KAPAT (SİL) BUTONU
-                                    ui.horizontal(|ui| {
-                                        ui.checkbox(&mut self.photos[i].is_included, "");
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            let close_btn = egui::Button::new(
-                                                RichText::new("✖")
-                                                    .size(12.0)
-                                                    .strong()
-                                                    .color(Color32::from_rgb(240, 80, 80)),
-                                            )
-                                            .frame(false);
-                                            if ui.add(close_btn).on_hover_text("Bu fotoğrafı listeden sil").clicked() {
-                                                to_remove = Some(i);
-                                            }
-                                        });
-                                    });
+                if ui.button(RichText::new("☑️ Tümünü Seç").size(12.0))
+                    .on_hover_text("Tüm fotoğrafları seç (Kısayol: Ctrl+A / Cmd+A)")
+                    .clicked()
+                {
+                    self.select_all_photos();
+                }
 
-                                    ui.add_space(2.0);
+                if sel_count > 0 {
+                    if ui.button(RichText::new("⬜ Seçimi Kaldır").size(12.0))
+                        .on_hover_text("Seçimi temizle (Kısayol: Esc)")
+                        .clicked()
+                    {
+                        self.clear_selection();
+                    }
 
-                                    // 2. 133x171 ÖNİZLEME BUTONU
-                                    if let Some(ref tex) = self.photos[i].preview_texture {
-                                        let img_btn = egui::ImageButton::new(tex);
-                                        if ui.add(img_btn).clicked() {
-                                            self.selected_index = Some(i);
-                                            self.zoom_level = 1.0;
-                                            self.pan_offset = Vec2::ZERO;
-                                        }
-                                    }
+                    let del_btn = egui::Button::new(
+                        RichText::new(format!("🗑️ Seçilenleri Sil ({})", sel_count))
+                            .size(12.0)
+                            .strong()
+                            .color(Color32::from_rgb(255, 110, 110)),
+                    );
+                    if ui.add(del_btn)
+                        .on_hover_text("Seçilen fotoğrafları listeden sil (Kısayol: Klavyeden Delete veya Backspace tuşu)")
+                        .clicked()
+                    {
+                        self.delete_selected_photos();
+                    }
 
-                                    ui.add_space(4.0);
+                    ui.separator();
 
-                                    // 3. DÜZENLENEBİLİR ÖĞRENCİ NUMARASI
-                                    let mut num = self.photos[i].student_number.clone();
-                                    let text_resp = ui.add(
-                                        egui::TextEdit::singleline(&mut num)
-                                            .desired_width(120.0)
-                                            .hint_text("Öğrenci No"),
-                                    );
-                                    if text_resp.changed() {
-                                        self.photos[i].student_number = num;
-                                    }
-
-                                    // 4. DOSYA BOYUTU BİLGİSİ
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(format!("{:.1} KB", self.photos[i].file_size_kb))
-                                                .small()
-                                                .color(if self.photos[i].is_included {
-                                                    Color32::LIGHT_GREEN
-                                                } else {
-                                                    Color32::GRAY
-                                                }),
-                                        );
-                                        if !self.photos[i].is_included {
-                                            ui.label(RichText::new("(Hariç)").small().italics().color(Color32::YELLOW));
-                                        }
-                                    });
-                                });
-                            });
-
-                            col += 1;
-                            if col >= columns {
-                                ui.end_row();
-                                col = 0;
+                    if ui.small_button("Dahil Et").on_hover_text("Seçilen fotoğrafları kaydetmeye dahil et").clicked() {
+                        for &idx in &self.selected_indices {
+                            if idx < self.photos.len() {
+                                self.photos[idx].is_included = true;
                             }
                         }
-                    });
+                    }
 
-                // Kapat butonuna basılan fotoğrafı listeden güvenle sil
-                if let Some(del_idx) = to_remove {
-                    self.photos.remove(del_idx);
-                    if self.selected_index == Some(del_idx) {
-                        self.selected_index = None;
-                    } else if let Some(sel) = self.selected_index {
-                        if sel > del_idx {
-                            self.selected_index = Some(sel - 1);
+                    if ui.small_button("Hariç Tut").on_hover_text("Seçilen fotoğrafları kaydetmeden hariç tut").clicked() {
+                        for &idx in &self.selected_indices {
+                            if idx < self.photos.len() {
+                                self.photos[idx].is_included = false;
+                            }
                         }
                     }
                 }
             });
+
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("💡 Toplu seçim: Ctrl/Cmd veya Shift ile tıklayın • Silme: Delete tuşu")
+                    .small()
+                    .italics()
+                    .color(Color32::GRAY),
+            );
+
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let card_width = 146.0_f32;
+                    let spacing = 12.0_f32;
+                    // Dikey kaydırma çubuğu ve panel kenar boşlukları için pay bırak
+                    let available_w = (ui.available_width() - 16.0).max(card_width);
+                    let columns = (((available_w + spacing) / (card_width + spacing)).floor() as usize).max(1);
+
+                    let mut to_remove = None;
+                    let mut photo_clicked = None;
+
+                    egui::Grid::new("photos_grid")
+                        .spacing(Vec2::new(spacing, spacing))
+                        .show(ui, |ui| {
+                            let mut col = 0;
+                            let len = self.photos.len();
+
+                            for i in 0..len {
+                                ui.vertical(|ui| {
+                                    ui.set_width(card_width);
+                                    ui.set_max_width(card_width);
+
+                                    let is_selected = self.selected_indices.contains(&i);
+                                    let is_inc = self.photos[i].is_included;
+                                    let frame = egui::Frame::group(ui.style())
+                                        .inner_margin(5.0)
+                                        .fill(if is_selected {
+                                            Color32::from_rgb(20, 42, 70)
+                                        } else if !is_inc {
+                                            Color32::from_rgb(18, 18, 20)
+                                        } else {
+                                            Color32::from_rgb(26, 26, 30)
+                                        })
+                                        .stroke(if is_selected {
+                                            egui::Stroke::new(2.5_f32, Color32::from_rgb(70, 160, 255))
+                                        } else if !is_inc {
+                                            egui::Stroke::new(1.0_f32, Color32::from_rgb(45, 45, 50))
+                                        } else {
+                                            egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 58, 65))
+                                        });
+
+                                    frame.show(ui, |ui| {
+                                        ui.set_width(card_width - 10.0);
+
+                                        // 1. SOL ÜST SEÇİM CHECKBOX & SAĞ ÜST KAPAT (SİL) BUTONU
+                                        ui.horizontal(|ui| {
+                                            let mut cb_selected = is_selected;
+                                            if ui.checkbox(&mut cb_selected, "").on_hover_text("Seç / Seçimi Kaldır (Ctrl/Shift destekler)").changed() {
+                                                let ctrl_or_cmd = true; // kutuya basmak toggle seçimidir
+                                                photo_clicked = Some((i, ctrl_or_cmd, false));
+                                            }
+
+                                            if is_selected {
+                                                ui.label(
+                                                    RichText::new("✓")
+                                                        .size(11.0)
+                                                        .strong()
+                                                        .color(Color32::from_rgb(80, 190, 255)),
+                                                );
+                                            }
+
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                let close_btn = egui::Button::new(
+                                                    RichText::new("✖")
+                                                        .size(12.0)
+                                                        .strong()
+                                                        .color(Color32::from_rgb(240, 80, 80)),
+                                                )
+                                                .frame(false);
+                                                if ui.add(close_btn).on_hover_text("Bu fotoğrafı listeden sil").clicked() {
+                                                    to_remove = Some(i);
+                                                }
+                                            });
+                                        });
+
+                                        ui.add_space(2.0);
+
+                                        // 2. 133x171 ÖNİZLEME BUTONU (Tıklama ile seçim ve detay açma)
+                                        if let Some(ref tex) = self.photos[i].preview_texture {
+                                            let img_btn = egui::ImageButton::new(tex);
+                                            let img_resp = ui.add(img_btn).on_hover_text(
+                                                "Tıkla: Detay panelinde incele\nCtrl/Cmd+Tık: Çoklu seçime ekle/çıkar\nShift+Tık: Aralık seçimi yap",
+                                            );
+                                            if img_resp.clicked() {
+                                                let ctrl_or_cmd = ui.input(|inp| inp.modifiers.command || inp.modifiers.ctrl);
+                                                let shift = ui.input(|inp| inp.modifiers.shift);
+                                                photo_clicked = Some((i, ctrl_or_cmd, shift));
+                                            }
+                                        }
+
+                                        ui.add_space(3.0);
+
+                                        // 3. DÜZENLENEBİLİR ÖĞRENCİ NUMARASI
+                                        let mut num = self.photos[i].student_number.clone();
+                                        let text_resp = ui.add(
+                                            egui::TextEdit::singleline(&mut num)
+                                                .desired_width(card_width - 16.0)
+                                                .hint_text("Öğrenci No"),
+                                        );
+                                        if text_resp.changed() {
+                                            self.photos[i].student_number = num;
+                                        }
+
+                                        ui.add_space(2.0);
+
+                                        // 4. DOSYA BOYUTU BİLGİSİ VE DAHİL/HARİÇ BUTONU
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(format!("{:.0}K", self.photos[i].file_size_kb))
+                                                    .small()
+                                                    .color(if self.photos[i].is_included {
+                                                        Color32::LIGHT_GREEN
+                                                    } else {
+                                                        Color32::GRAY
+                                                    }),
+                                            );
+
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                let inc_text = if self.photos[i].is_included {
+                                                    RichText::new("Dahil").size(10.0).color(Color32::from_rgb(130, 220, 150))
+                                                } else {
+                                                    RichText::new("Hariç").size(10.0).color(Color32::YELLOW)
+                                                };
+                                                if ui.small_button(inc_text).on_hover_text("Kaydetmeye dahil et veya hariç tut").clicked() {
+                                                    self.photos[i].is_included = !self.photos[i].is_included;
+                                                }
+                                            });
+                                        });
+                                    });
+                                });
+
+                                col += 1;
+                                if col >= columns {
+                                    ui.end_row();
+                                    col = 0;
+                                }
+                            }
+                        });
+
+                    // Fotoğraf tıklaması olduysa işle
+                    if let Some((idx, ctrl_or_cmd, shift)) = photo_clicked {
+                        self.handle_photo_click(idx, ctrl_or_cmd, shift);
+                    }
+
+                    // Kapat butonuna basılan fotoğrafı listeden güvenle sil
+                    if let Some(del_idx) = to_remove {
+                        self.delete_photo(del_idx);
+                    }
+                });
         });
     }
 }
