@@ -15,9 +15,77 @@ pub struct CropRect {
     pub height: u32,
 }
 
+/// HEIC / HEIF formatındaki görselleri heic-rs ile çözüp DynamicImage'e dönüştürür.
+/// Konteyner seviyesindeki dönüştürmeleri (irot/imir) heic-rs otomatik uygular;
+/// eğer konteyner dönüşümü yoksa EXIF Orientation etiketini kontrol eder.
+fn load_heic_image<P: AsRef<Path>>(path: P) -> Result<DynamicImage> {
+    let path_ref = path.as_ref();
+    let bytes = std::fs::read(path_ref)
+        .with_context(|| format!("HEIC dosyası okunamadı: {:?}", path_ref))?;
+
+    let info = heic_rs::probe(&bytes)
+        .with_context(|| format!("HEIC formatı doğrulanamadı: {:?}", path_ref))?;
+
+    let options = heic_rs::DecodeOptions {
+        layout: heic_rs::PixelLayout::Rgb8,
+        apply_transforms: true,
+        ..Default::default()
+    };
+
+    let decoded = heic_rs::decode(&bytes, &options)
+        .map_err(|e| anyhow!("HEIC görseli çözülemedi ({:?}): {:?}", path_ref, e))?;
+
+    let img_buffer = image::RgbImage::from_raw(decoded.width, decoded.height, decoded.data)
+        .ok_or_else(|| anyhow!("HEIC piksel tamponu oluşturulamadı: {:?}", path_ref))?;
+    let mut img = DynamicImage::ImageRgb8(img_buffer);
+
+    // Konteyner seviyesinde dönüşüm (irot veya imir) yoksa EXIF yönelimini uygula
+    let container_transformed = !matches!(info.rotation, heic_rs::Rotation::None) || info.mirror.is_some();
+    if !container_transformed {
+        let mut cursor = Cursor::new(&bytes);
+        let exifreader = exif::Reader::new();
+        let orientation = exifreader
+            .read_from_container(&mut cursor)
+            .ok()
+            .and_then(|exif_data| {
+                exif_data
+                    .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                    .and_then(|field| field.value.get_uint(0))
+            })
+            .unwrap_or(1);
+
+        img = match orientation {
+            2 => img.fliph(),
+            3 => img.rotate180(),
+            4 => img.flipv(),
+            5 => img.rotate90().fliph(),
+            6 => img.rotate90(),
+            7 => img.rotate270().fliph(),
+            8 => img.rotate270(),
+            _ => img,
+        };
+    }
+
+    Ok(img)
+}
+
 /// EXIF Orientation etiketini okuyarak fotoğrafı doğru yönüne döndürür.
+/// JPEG, PNG ve HEIC/HEIF (.heic, .heif) formatlarını destekler.
 pub fn load_and_fix_orientation<P: AsRef<Path>>(path: P) -> Result<DynamicImage> {
     let path_ref = path.as_ref();
+    let is_heic = path_ref
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|ext| {
+            let ext_lower = ext.to_lowercase();
+            ext_lower == "heic" || ext_lower == "heif"
+        })
+        .unwrap_or(false);
+
+    if is_heic {
+        return load_heic_image(path_ref);
+    }
+
     let file = File::open(path_ref).with_context(|| format!("Dosya açılamadı: {:?}", path_ref))?;
     let mut bufreader = std::io::BufReader::new(&file);
 
@@ -32,7 +100,17 @@ pub fn load_and_fix_orientation<P: AsRef<Path>>(path: P) -> Result<DynamicImage>
         })
         .unwrap_or(1);
 
-    let mut img = image::open(path_ref).with_context(|| format!("Görsel yüklenemedi: {:?}", path_ref))?;
+    let img_res = image::open(path_ref);
+    let mut img = match img_res {
+        Ok(img) => img,
+        Err(e) => {
+            // Uzantısı farklı olsa bile (örn. uzantısız veya yanlış uzantılı) HEIC ise çözmeyi dene
+            if let Ok(heic_img) = load_heic_image(path_ref) {
+                return Ok(heic_img);
+            }
+            return Err(e).with_context(|| format!("Görsel yüklenemedi: {:?}", path_ref));
+        }
+    };
 
     img = match orientation {
         2 => img.fliph(),
@@ -221,3 +299,32 @@ pub fn encode_custom_jpeg(
 pub fn encode_eokul_jpeg(img: &DynamicImage) -> Result<Vec<u8>> {
     encode_custom_jpeg(img, 95, 20, 150)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_heic_image() {
+        let path = "ornekresimler/IMG_4244.HEIC";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+
+        let img = load_and_fix_orientation(path).expect("HEIC dosyası başarıyla yüklenmelidir");
+        assert_eq!(img.width(), 3024);
+        assert_eq!(img.height(), 4032);
+
+        let crop = detect_portrait_crop(&img);
+        assert!(crop.width > 0 && crop.height > 0);
+
+        let scaled = crop_and_scale(&img, &crop);
+        assert_eq!(scaled.width(), 133);
+        assert_eq!(scaled.height(), 171);
+
+        let jpeg_bytes = encode_custom_jpeg(&scaled, 85, 20, 150).expect("JPEG kodlama başarılı olmalıdır");
+        assert!(jpeg_bytes.len() >= 20 * 1024);
+        assert!(jpeg_bytes.len() <= 150 * 1024);
+    }
+}
+

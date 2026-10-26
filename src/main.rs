@@ -343,7 +343,12 @@ impl OkulFotoApp {
                 if path.is_file() {
                     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                         let ext_lower = ext.to_lowercase();
-                        if ext_lower == "jpg" || ext_lower == "jpeg" || ext_lower == "png" {
+                        if ext_lower == "jpg"
+                            || ext_lower == "jpeg"
+                            || ext_lower == "png"
+                            || ext_lower == "heic"
+                            || ext_lower == "heif"
+                        {
                             files.push(path);
                         }
                     }
@@ -354,7 +359,7 @@ impl OkulFotoApp {
         files.sort();
 
         if files.is_empty() {
-            self.status_text = "⚠️ Kaynak klasörde fotoğraf bulunamadı (.jpg, .jpeg, .png).".to_string();
+            self.status_text = "⚠️ Kaynak klasörde fotoğraf bulunamadı (.jpg, .jpeg, .png, .heic).".to_string();
             return;
         }
 
@@ -391,7 +396,10 @@ impl OkulFotoApp {
                 // Pipeline adımları
                 let oriented_img = match load_and_fix_orientation(&file_path) {
                     Ok(img) => img,
-                    Err(_) => continue,
+                    Err(e) => {
+                        eprintln!("Fotoğraf okunamadı {:?}: {:?}", file_path, e);
+                        continue;
+                    }
                 };
 
                 // OCR ile tahtadaki numara

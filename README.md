@@ -18,6 +18,8 @@ Milli Eğitim Bakanlığı (MEB) **e-Okul** fotoğraf yükleme standartlarına t
   - **Kadraj Kaydırma Butonları:** İstenen yöne piksel hassasiyetinde kadraj ayarlama (32x32 vektörel ikonlar).
   - **Görsel Seçim / Çıkarma:** Sol üst onay kutusu (checkbox) ile çıktıya dahil etme/etmeme; sağ üst kapatma butonu ile listeden kalıcı çıkarma.
   - **Dinamik Kalite & Boyut Ayarı:** Hedef JPEG kalitesi (%40 - %100) ve min/max KB sınırlarını arayüzden belirleyebilme.
+- **Geniş Format Desteği:**
+  - JPEG (.jpg, .jpeg) ve PNG formatlarının yanı sıra, modern akıllı telefonlarla (iPhone vb.) çekilen **HEIC / HEIF (.heic, .heif)** fotoğraflarını doğrudan okuma desteği (saf Rust ile sıfır harici C bağımlılığı).
 - **Hafif ve Hızlı:**
   - Rust ve `eframe`/`egui` ile sıfır harici Python/OpenCV bağımlılığı, ultra hızlı çalıştırma.
 

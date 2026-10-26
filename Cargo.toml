@@ -1,6 +1,6 @@
 [package]
 name = "okulfotoeditor"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["YSR"]
 description = "e-Okul Öğrenci Fotoğrafı Hazırlama ve Otomatik İsimlendirme Masaüstü GUI Uygulaması"
@@ -11,6 +11,7 @@ rfd = "0.15"
 image = { version = "0.25", features = ["jpeg", "png"] }
 kamadak-exif = "0.6"
 anyhow = "1.0"
+heic-rs = "0.1"
 
 [profile.release]
 opt-level = 3
