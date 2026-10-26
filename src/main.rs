@@ -999,22 +999,22 @@ impl eframe::App for OkulFotoApp {
                                     ui.horizontal(|ui| {
                                         let btn_up = egui::Button::image(&icons.arrow_up).min_size(Vec2::new(32.0, 32.0));
                                         if ui.add(btn_up).on_hover_text("Yukarı Kaydır").clicked() {
-                                            crop_action = Some((0, -20, 1.0));
+                                            crop_action = Some((0, 20, 1.0));
                                         }
 
                                         let btn_down = egui::Button::image(&icons.arrow_down).min_size(Vec2::new(32.0, 32.0));
                                         if ui.add(btn_down).on_hover_text("Aşağı Kaydır").clicked() {
-                                            crop_action = Some((0, 20, 1.0));
+                                            crop_action = Some((0, -20, 1.0));
                                         }
 
                                         let btn_left = egui::Button::image(&icons.arrow_left).min_size(Vec2::new(32.0, 32.0));
                                         if ui.add(btn_left).on_hover_text("Sola Kaydır").clicked() {
-                                            crop_action = Some((-20, 0, 1.0));
+                                            crop_action = Some((20, 0, 1.0));
                                         }
 
                                         let btn_right = egui::Button::image(&icons.arrow_right).min_size(Vec2::new(32.0, 32.0));
                                         if ui.add(btn_right).on_hover_text("Sağa Kaydır").clicked() {
-                                            crop_action = Some((20, 0, 1.0));
+                                            crop_action = Some((-20, 0, 1.0));
                                         }
                                     });
 
