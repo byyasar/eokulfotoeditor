@@ -178,6 +178,11 @@ struct OkulFotoApp {
     min_kb: usize,
     max_kb: usize,
 
+    // Rehber Çizgileri (Biometrik / Vesikalık Kılavuz Çizgileri)
+    show_guide_lines: bool,
+    guide_line_color: Color32,
+    guide_line_thickness: f32,
+
     // 32x32 Buton İkonları
     icons: Option<AppIcons>,
 
@@ -205,6 +210,9 @@ impl Default for OkulFotoApp {
             jpeg_quality: 95,
             min_kb: 20,
             max_kb: 150,
+            show_guide_lines: true,
+            guide_line_color: Color32::from_rgb(0, 230, 118),
+            guide_line_thickness: 1.5,
             icons: None,
             rx: None,
         }
@@ -552,6 +560,125 @@ impl OkulFotoApp {
         } else {
             self.status_text = "⚠️ Dışa aktarılacak seçili fotoğraf kaydedilemedi!".to_string();
         }
+    }
+}
+
+/// Kesikli çizgi çizme yardımcı fonksiyonu (Dashed Line)
+fn draw_dashed_line_egui(
+    painter: &egui::Painter,
+    start: egui::Pos2,
+    end: egui::Pos2,
+    dash_len: f32,
+    gap_len: f32,
+    stroke: egui::Stroke,
+) {
+    let delta = end - start;
+    let dist = delta.length();
+    if dist < 1.0 {
+        return;
+    }
+    let dir = delta / dist;
+    let mut curr = 0.0;
+    while curr < dist {
+        let next = (curr + dash_len).min(dist);
+        painter.line_segment([start + dir * curr, start + dir * next], stroke);
+        curr += dash_len + gap_len;
+    }
+}
+
+/// Vesikalık kadraj tuvali üzerine biometrik kafa/omuz ve hizalama rehber çizgilerini çizer.
+fn draw_biometric_guide_overlay(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    color: Color32,
+    thickness: f32,
+) {
+    let stroke = egui::Stroke::new(thickness, color);
+    let faint_stroke = egui::Stroke::new((thickness * 0.85).max(0.5), color.gamma_multiply(0.75));
+    let corner_stroke = egui::Stroke::new((thickness * 1.5).max(1.0), color);
+
+    let margin_x = rect.width() * 0.05;
+    let margin_y = rect.height() * 0.05;
+    let box_rect = rect.shrink2(egui::vec2(margin_x, margin_y));
+
+    let x0 = box_rect.left();
+    let y0 = box_rect.top();
+    let x1 = box_rect.right();
+    let y1 = box_rect.bottom();
+    let bw = box_rect.width();
+    let bh = box_rect.height();
+    let cx = box_rect.center().x;
+
+    // 1. Köşe Köşebentleri (Corner Brackets)
+    let corner_len = (bw * 0.14).clamp(8.0, 20.0);
+    // Sol üst
+    painter.line_segment([egui::pos2(x0, y0), egui::pos2(x0 + corner_len, y0)], corner_stroke);
+    painter.line_segment([egui::pos2(x0, y0), egui::pos2(x0, y0 + corner_len)], corner_stroke);
+    // Sağ üst
+    painter.line_segment([egui::pos2(x1, y0), egui::pos2(x1 - corner_len, y0)], corner_stroke);
+    painter.line_segment([egui::pos2(x1, y0), egui::pos2(x1, y0 + corner_len)], corner_stroke);
+    // Sol alt
+    painter.line_segment([egui::pos2(x0, y1), egui::pos2(x0 + corner_len, y1)], corner_stroke);
+    painter.line_segment([egui::pos2(x0, y1), egui::pos2(x0, y1 - corner_len)], corner_stroke);
+    // Sağ alt
+    painter.line_segment([egui::pos2(x1, y1), egui::pos2(x1 - corner_len, y1)], corner_stroke);
+    painter.line_segment([egui::pos2(x1, y1), egui::pos2(x1, y1 - corner_len)], corner_stroke);
+
+    // 2. Dış Çerçeve Kesikli Çizgileri
+    draw_dashed_line_egui(painter, egui::pos2(x0 + corner_len, y0), egui::pos2(x1 - corner_len, y0), 4.0, 3.0, faint_stroke);
+    draw_dashed_line_egui(painter, egui::pos2(x0 + corner_len, y1), egui::pos2(x1 - corner_len, y1), 4.0, 3.0, faint_stroke);
+    draw_dashed_line_egui(painter, egui::pos2(x0, y0 + corner_len), egui::pos2(x0, y1 - corner_len), 4.0, 3.0, faint_stroke);
+    draw_dashed_line_egui(painter, egui::pos2(x1, y0 + corner_len), egui::pos2(x1, y1 - corner_len), 4.0, 3.0, faint_stroke);
+
+    // 3. Dikey Merkez Simetri Çizgisi
+    draw_dashed_line_egui(painter, egui::pos2(cx, y0), egui::pos2(cx, y1), 4.0, 3.0, faint_stroke);
+
+    // 4. Yatay Göz Hizası Çizgisi (~%46)
+    let eye_y = y0 + bh * 0.46;
+    draw_dashed_line_egui(painter, egui::pos2(x0, eye_y), egui::pos2(x1, eye_y), 4.0, 3.0, faint_stroke);
+
+    // 5. Yatay Çene / Yaka Hizası Çizgisi (~%80)
+    let chin_y = y0 + bh * 0.80;
+    draw_dashed_line_egui(painter, egui::pos2(x0, chin_y), egui::pos2(x1, chin_y), 4.0, 3.0, faint_stroke);
+
+    // 6. Baş ve Omuz Biometrik Silüet Konturu
+    let half_profile = [
+        (0.00, 0.08),  // Tepe orta
+        (0.08, 0.085), // Tepe eğim
+        (0.16, 0.105), // Alın üst
+        (0.24, 0.14),  // Alın yuvarlak
+        (0.31, 0.19),  // Üst şakak
+        (0.35, 0.26),  // Şakak
+        (0.36, 0.34),  // Kulak üstü
+        (0.34, 0.42),  // Kulak memesi / yanak girintisi
+        (0.35, 0.45),  // Yanak dış
+        (0.32, 0.54),  // Çene kemiği başlangıcı
+        (0.28, 0.63),  // Orta çene
+        (0.23, 0.70),  // Alt çene
+        (0.22, 0.75),  // Boyun
+        (0.23, 0.79),  // Boyun tabanı
+        (0.28, 0.83),  // Trapezius / yaka
+        (0.35, 0.87),  // Omuz eğimi
+        (0.42, 0.92),  // Omuz dışı
+        (0.48, 0.96),  // Alt omuz
+    ];
+
+    let mut full_pts = Vec::with_capacity(half_profile.len() * 2);
+    // Sol taraf (ters sıralı)
+    for &(rx, ry) in half_profile.iter().rev() {
+        if rx > 0.001 {
+            full_pts.push(egui::pos2(cx - rx * bw, y0 + ry * bh));
+        }
+    }
+    // Tepe noktası
+    full_pts.push(egui::pos2(cx, y0 + half_profile[0].1 * bh));
+    // Sağ taraf
+    for &(rx, ry) in half_profile.iter().skip(1) {
+        full_pts.push(egui::pos2(cx + rx * bw, y0 + ry * bh));
+    }
+
+    for w in full_pts.windows(2) {
+        painter.line_segment([w[0], w[1]], stroke);
     }
 }
 
@@ -981,6 +1108,17 @@ impl eframe::App for OkulFotoApp {
                                         Color32::WHITE,
                                     );
                                 }
+
+                                // Biyometrik Rehber Çizgileri (Görsel fare ile gezdirmeyi engellemez)
+                                if self.show_guide_lines {
+                                    draw_biometric_guide_overlay(
+                                        &v_painter,
+                                        v_rect,
+                                        self.guide_line_color,
+                                        self.guide_line_thickness,
+                                    );
+                                }
+
                                 v_painter.rect_stroke(
                                     v_rect,
                                     4.0,
@@ -1030,6 +1168,38 @@ impl eframe::App for OkulFotoApp {
                                             crop_action = Some((0, 0, 1.08));
                                         }
                                     });
+
+                                    ui.add_space(6.0);
+                                    ui.separator();
+                                    ui.add_space(2.0);
+
+                                    // Rehber Çizgileri Kontrolleri
+                                    ui.checkbox(&mut self.show_guide_lines, RichText::new("📐 Rehber Çizgileri").small().strong());
+
+                                    if self.show_guide_lines {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new("Renk:").small());
+                                            ui.color_edit_button_srgba(&mut self.guide_line_color);
+
+                                            if ui.small_button(RichText::new("🟢").size(10.0)).on_hover_text("Yeşil (Varsayılan)").clicked() {
+                                                self.guide_line_color = Color32::from_rgb(0, 230, 118);
+                                            }
+                                            if ui.small_button(RichText::new("⚪").size(10.0)).on_hover_text("Beyaz").clicked() {
+                                                self.guide_line_color = Color32::from_rgba_premultiplied(255, 255, 255, 220);
+                                            }
+                                            if ui.small_button(RichText::new("🟡").size(10.0)).on_hover_text("Sarı").clicked() {
+                                                self.guide_line_color = Color32::from_rgb(255, 215, 0);
+                                            }
+                                            if ui.small_button(RichText::new("🔵").size(10.0)).on_hover_text("Mavi").clicked() {
+                                                self.guide_line_color = Color32::from_rgb(0, 190, 255);
+                                            }
+                                        });
+
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new("Kalınlık:").small());
+                                            ui.add(egui::Slider::new(&mut self.guide_line_thickness, 0.5..=4.0).show_value(true).text("px"));
+                                        });
+                                    }
                                 });
                             });
 
