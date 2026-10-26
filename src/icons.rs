@@ -1,7 +1,7 @@
 //! 32x32 piksel boyutunda uygulama genelindeki tüm buton ikonlarını üreten modül.
 //! Dış dosya gerektirmeden pürüzsüz RGBA vektörel çizimler sunar.
 
-use image::{ImageBuffer, Rgba, RgbaImage};
+use image::{imageops, ImageBuffer, Rgba, RgbaImage};
 
 /// 32x32 Klasör İkonu (Kaynak Klasör)
 pub fn create_folder_icon_32() -> RgbaImage {
@@ -201,15 +201,23 @@ pub fn create_close_icon_32() -> RgbaImage {
     img
 }
 
-/// 32x32 Yukarı Ok İkonu
+/// 32x32 Yukarı Ok İkonu (Belirgin ve simetrik yön oku)
 pub fn create_arrow_up_32() -> RgbaImage {
     let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
     let color = Rgba([52, 152, 219, 255]);
 
-    for y in 14..24 { for x in 14..18 { img.put_pixel(x, y, color); } }
-    for i in 0..6 {
-        for x in (16 - i)..=(15 + i) {
-            img.put_pixel(x as u32, (14 - i) as u32, color);
+    // Ok ucu: y=5'te sivri başlayıp y=14'te 20 piksel genişliğe ulaşır
+    for dy in 0..10 {
+        let y = 5 + dy;
+        let half_w = dy + 1; // dy=0 -> w=2 (15..=16), dy=9 -> w=20 (6..=25)
+        for x in (16 - half_w)..=(15 + half_w) {
+            img.put_pixel(x as u32, y as u32, color);
+        }
+    }
+    // Ok gövdesi: y=15..=26, 6 piksel genişlik (13..=18)
+    for y in 15..=26 {
+        for x in 13..=18 {
+            img.put_pixel(x, y, color);
         }
     }
     img
@@ -217,44 +225,20 @@ pub fn create_arrow_up_32() -> RgbaImage {
 
 /// 32x32 Aşağı Ok İkonu
 pub fn create_arrow_down_32() -> RgbaImage {
-    let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
-    let color = Rgba([52, 152, 219, 255]);
-
-    for y in 8..18 { for x in 14..18 { img.put_pixel(x, y, color); } }
-    for i in 0..6 {
-        for x in (16 - i)..=(15 + i) {
-            img.put_pixel(x as u32, (18 + i) as u32, color);
-        }
-    }
-    img
+    let up = create_arrow_up_32();
+    imageops::rotate180(&up)
 }
 
 /// 32x32 Sol Ok İkonu
 pub fn create_arrow_left_32() -> RgbaImage {
-    let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
-    let color = Rgba([52, 152, 219, 255]);
-
-    for y in 14..18 { for x in 14..24 { img.put_pixel(x, y, color); } }
-    for i in 0..6 {
-        for y in (16 - i)..=(15 + i) {
-            img.put_pixel((14 - i) as u32, y as u32, color);
-        }
-    }
-    img
+    let up = create_arrow_up_32();
+    imageops::rotate270(&up)
 }
 
 /// 32x32 Sağ Ok İkonu
 pub fn create_arrow_right_32() -> RgbaImage {
-    let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
-    let color = Rgba([52, 152, 219, 255]);
-
-    for y in 14..18 { for x in 8..18 { img.put_pixel(x, y, color); } }
-    for i in 0..6 {
-        for y in (16 - i)..=(15 + i) {
-            img.put_pixel((18 + i) as u32, y as u32, color);
-        }
-    }
-    img
+    let up = create_arrow_up_32();
+    imageops::rotate90(&up)
 }
 
 /// 32x32 Açık Klasör İkonu (Kaydedilen Klasörü Aç / Göster)
