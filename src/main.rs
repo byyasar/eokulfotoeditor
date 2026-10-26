@@ -65,6 +65,10 @@ struct AppIcons {
     arrow_down: TextureHandle,
     arrow_left: TextureHandle,
     arrow_right: TextureHandle,
+    prev: TextureHandle,
+    next: TextureHandle,
+    rotate_left: TextureHandle,
+    rotate_right: TextureHandle,
 }
 
 impl AppIcons {
@@ -88,6 +92,10 @@ impl AppIcons {
             arrow_down: load_32("icon_arrow_down", icons::create_arrow_down_32()),
             arrow_left: load_32("icon_arrow_left", icons::create_arrow_left_32()),
             arrow_right: load_32("icon_arrow_right", icons::create_arrow_right_32()),
+            prev: load_32("icon_prev", icons::create_prev_icon_32()),
+            next: load_32("icon_next", icons::create_next_icon_32()),
+            rotate_left: load_32("icon_rotate_left", icons::create_rotate_left_32()),
+            rotate_right: load_32("icon_rotate_right", icons::create_rotate_right_32()),
         }
     }
 }
@@ -183,6 +191,9 @@ struct OkulFotoApp {
     guide_line_color: Color32,
     guide_line_thickness: f32,
 
+    // Otomatik Seçili Kartı Görünüme Kaydırma
+    scroll_to_selected: bool,
+
     // 32x32 Buton İkonları
     icons: Option<AppIcons>,
 
@@ -213,6 +224,7 @@ impl Default for OkulFotoApp {
             show_guide_lines: true,
             guide_line_color: Color32::from_rgb(0, 230, 118),
             guide_line_thickness: 1.5,
+            scroll_to_selected: false,
             icons: None,
             rx: None,
         }
@@ -220,6 +232,113 @@ impl Default for OkulFotoApp {
 }
 
 impl OkulFotoApp {
+    /// Belirtilen indeksteki fotoğrafı seçer ve zoom/pan sıfırlar
+    fn select_photo(&mut self, i: usize) {
+        if i < self.photos.len() {
+            self.selected_indices.clear();
+            self.selected_indices.insert(i);
+            self.selected_index = Some(i);
+            self.last_clicked_index = Some(i);
+            self.zoom_level = 1.0;
+            self.pan_offset = Vec2::ZERO;
+            self.scroll_to_selected = true;
+        }
+    }
+
+    /// Bir önceki fotoğrafa geçer
+    fn select_prev_photo(&mut self) {
+        if self.photos.is_empty() {
+            return;
+        }
+        let target = match self.selected_index {
+            Some(idx) if idx > 0 => idx - 1,
+            Some(_) => return,
+            None => 0,
+        };
+        self.select_photo(target);
+    }
+
+    /// Bir sonraki fotoğrafa geçer
+    fn select_next_photo(&mut self) {
+        if self.photos.is_empty() {
+            return;
+        }
+        let target = match self.selected_index {
+            Some(idx) if idx + 1 < self.photos.len() => idx + 1,
+            Some(_) => return,
+            None => 0,
+        };
+        self.select_photo(target);
+    }
+
+    /// Belirtilen indeksteki fotoğrafı 90 derece döndürür (clockwise = true ise sağa, false ise sola)
+    fn rotate_photo_at(&mut self, ctx: &egui::Context, idx: usize, clockwise: bool) {
+        if idx >= self.photos.len() {
+            return;
+        }
+
+        let photo = &mut self.photos[idx];
+        if let Some(ref orig) = photo.original_image {
+            let rotated = if clockwise {
+                orig.rotate90()
+            } else {
+                orig.rotate270()
+            };
+
+            // 1. Orijinal önizleme dokusunu (Tahta İnceleme için) güncelle
+            let orig_thumb = rotated.thumbnail(800, 800).to_rgb8();
+            let (ow, oh) = orig_thumb.dimensions();
+            let orig_color_image = egui::ColorImage::from_rgb(
+                [ow as usize, oh as usize],
+                orig_thumb.as_raw(),
+            );
+            photo.original_preview_texture = Some(ctx.load_texture(
+                format!("orig_{}", idx),
+                orig_color_image,
+                egui::TextureOptions::LINEAR,
+            ));
+
+            // 2. Döndürülmüş yeni görsele göre yüz tespiti ve vesikalık kırpma
+            let new_crop = detect_portrait_crop(&rotated);
+            photo.current_crop = new_crop;
+
+            // 3. 133x171 ölçekle ve JPEG kodla
+            let scaled = crop_and_scale(&rotated, &photo.current_crop);
+            if let Ok(bytes) = encode_custom_jpeg(&scaled, self.jpeg_quality, self.min_kb, self.max_kb) {
+                photo.file_size_kb = bytes.len() as f64 / 1024.0;
+                photo.jpeg_bytes = bytes;
+
+                let preview_rgb = scaled.to_rgb8();
+                let (w, h) = preview_rgb.dimensions();
+                let color_image = egui::ColorImage::from_rgb([w as usize, h as usize], preview_rgb.as_raw());
+                photo.preview_texture = Some(ctx.load_texture(
+                    format!("preview_{}", idx),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+
+            photo.original_image = Some(rotated);
+            self.zoom_level = 1.0;
+            self.pan_offset = Vec2::ZERO;
+        }
+    }
+
+    /// Seçili fotoğrafı 90 derece döndürür
+    fn rotate_selected_photo(&mut self, ctx: &egui::Context, clockwise: bool) {
+        if let Some(idx) = self.selected_index {
+            self.rotate_photo_at(ctx, idx, clockwise);
+        }
+    }
+
+    /// Çoklu seçilen tüm fotoğrafları 90 derece döndürür
+    fn rotate_selected_photos(&mut self, ctx: &egui::Context, clockwise: bool) {
+        let indices: Vec<usize> = self.selected_indices.iter().copied().collect();
+        for idx in indices {
+            self.rotate_photo_at(ctx, idx, clockwise);
+        }
+    }
+
     /// Tüm fotoğrafları topluca seçer
     fn select_all_photos(&mut self) {
         self.selected_indices = (0..self.photos.len()).collect();
@@ -712,6 +831,28 @@ impl eframe::App for OkulFotoApp {
             if esc_pressed && !self.selected_indices.is_empty() {
                 self.clear_selection();
             }
+
+            // Sol / Sağ Ok veya PageUp / PageDown tuşları ile fotoğraflar arası geçiş
+            let prev_pressed = ctx.input(|i| {
+                i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::PageUp)
+            });
+            let next_pressed = ctx.input(|i| {
+                i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::PageDown)
+            });
+
+            if prev_pressed {
+                self.select_prev_photo();
+            } else if next_pressed {
+                self.select_next_photo();
+            }
+
+            // R veya L tuşları ile seçili fotoğrafı döndür (R = Sağa 90°, L veya Shift+R = Sola 90°)
+            if ctx.input(|i| i.key_pressed(egui::Key::R)) {
+                let clockwise = !ctx.input(|i| i.modifiers.shift);
+                self.rotate_selected_photo(ctx, clockwise);
+            } else if ctx.input(|i| i.key_pressed(egui::Key::L)) {
+                self.rotate_selected_photo(ctx, false);
+            }
         }
 
         // Arka plan iş parçacığından gelen verileri al
@@ -923,6 +1064,8 @@ impl eframe::App for OkulFotoApp {
 
         // --- SAĞ PANEL: Fotoğraf İnceleme & Zoom (Sabit, Kalıcı, İki Parçalı Bölünmüş Tasarım) ---
         let mut crop_action = None;
+        let mut switch_photo: Option<usize> = None;
+        let mut rotate_action: Option<bool> = None;
         let screen_width = ctx.screen_rect().width();
         let target_panel_width = (screen_width * 0.42).clamp(360.0, 560.0);
 
@@ -941,12 +1084,28 @@ impl eframe::App for OkulFotoApp {
                     if let Some(idx) = self.selected_index {
                         if idx < self.photos.len() {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let has_next = idx + 1 < self.photos.len();
+                                if ui.add_enabled(has_next, egui::Button::new(RichText::new("▶").size(12.0).strong()))
+                                    .on_hover_text("Sonraki Fotoğrafa Geç (Sağ Ok)")
+                                    .clicked()
+                                {
+                                    switch_photo = Some(idx + 1);
+                                }
+
                                 ui.label(
                                     RichText::new(format!("Fotoğraf: {} / {}", idx + 1, self.photos.len()))
                                         .size(12.0)
                                         .color(Color32::from_rgb(110, 190, 255))
                                         .strong(),
                                 );
+
+                                let has_prev = idx > 0;
+                                if ui.add_enabled(has_prev, egui::Button::new(RichText::new("◀").size(12.0).strong()))
+                                    .on_hover_text("Önceki Fotoğrafa Geç (Sol Ok)")
+                                    .clicked()
+                                {
+                                    switch_photo = Some(idx.saturating_sub(1));
+                                }
                             });
                         }
                     }
@@ -999,6 +1158,18 @@ impl eframe::App for OkulFotoApp {
                                 if ui.add(rst_btn).on_hover_text("Konumu ve Zoom'u Sıfırla").clicked() {
                                     self.zoom_level = 1.0;
                                     self.pan_offset = Vec2::ZERO;
+                                }
+
+                                ui.separator();
+
+                                let rot_l = egui::Button::image(&icons.rotate_left).min_size(Vec2::new(32.0, 32.0));
+                                if ui.add(rot_l).on_hover_text("Fotoğrafı 90° Sola Döndür (Kısayol: L veya Shift+R)").clicked() {
+                                    rotate_action = Some(false);
+                                }
+
+                                let rot_r = egui::Button::image(&icons.rotate_right).min_size(Vec2::new(32.0, 32.0));
+                                if ui.add(rot_r).on_hover_text("Fotoğrafı 90° Sağa Döndür (Kısayol: R)").clicked() {
+                                    rotate_action = Some(true);
                                 }
                             });
 
@@ -1169,6 +1340,19 @@ impl eframe::App for OkulFotoApp {
                                         }
                                     });
 
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let btn_rotl = egui::Button::image_and_text(&icons.rotate_left, " 90° Sola").min_size(Vec2::new(88.0, 34.0));
+                                        if ui.add(btn_rotl).on_hover_text("Fotoğrafı 90° Sola Döndür (Kısayol: L veya Shift+R)").clicked() {
+                                            rotate_action = Some(false);
+                                        }
+
+                                        let btn_rotr = egui::Button::image_and_text(&icons.rotate_right, " 90° Sağa").min_size(Vec2::new(88.0, 34.0));
+                                        if ui.add(btn_rotr).on_hover_text("Fotoğrafı 90° Sağa Döndür (Kısayol: R)").clicked() {
+                                            rotate_action = Some(true);
+                                        }
+                                    });
+
                                     ui.add_space(6.0);
                                     ui.separator();
                                     ui.add_space(2.0);
@@ -1203,6 +1387,56 @@ impl eframe::App for OkulFotoApp {
                                 });
                             });
 
+                            ui.add_space(8.0);
+
+                            // --- 4. FOTOĞRAFLAR ARASI GEÇİŞ BUTONLARI (Önceki / Sonraki Resim) ---
+                            let has_prev = idx > 0;
+                            let has_next = idx + 1 < self.photos.len();
+
+                            egui::Frame::none()
+                                .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+                                .fill(Color32::from_rgb(22, 22, 28))
+                                .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 48, 58)))
+                                .rounding(6.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let prev_btn = egui::Button::image_and_text(
+                                            &icons.prev,
+                                            RichText::new(" Önceki Resim").size(13.0).strong(),
+                                        )
+                                        .min_size(Vec2::new(135.0, 38.0));
+
+                                        if ui.add_enabled(has_prev, prev_btn)
+                                            .on_hover_text("Önceki fotoğrafa geç (Kısayol: Sol Ok veya PageUp)")
+                                            .clicked()
+                                        {
+                                            switch_photo = Some(idx.saturating_sub(1));
+                                        }
+
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            let next_btn = egui::Button::image_and_text(
+                                                &icons.next,
+                                                RichText::new("Sonraki Resim ").size(13.0).strong(),
+                                            )
+                                            .min_size(Vec2::new(135.0, 38.0));
+
+                                            if ui.add_enabled(has_next, next_btn)
+                                                .on_hover_text("Sonraki fotoğrafa geç (Kısayol: Sağ Ok veya PageDown)")
+                                                .clicked()
+                                            {
+                                                switch_photo = Some(idx + 1);
+                                            }
+
+                                            ui.label(
+                                                RichText::new(format!("{} / {}", idx + 1, self.photos.len()))
+                                                    .size(13.0)
+                                                    .strong()
+                                                    .color(Color32::from_rgb(110, 190, 255)),
+                                            );
+                                        });
+                                    });
+                                });
+
                             ui.add_space(10.0);
                         } else {
                             ui.vertical_centered(|ui| {
@@ -1236,14 +1470,22 @@ impl eframe::App for OkulFotoApp {
                     }
                 });
 
-                if crop_action.is_some() {
+                if crop_action.is_some() || switch_photo.is_some() || rotate_action.is_some() {
                     ctx.request_repaint();
                 }
             });
 
-        // Panelin dışında borrow serbest olduğunda kadrajı güncelle
+        // Panelin dışında borrow serbest olduğunda kadrajı güncelle veya fotoğrafı değiştir / döndür
         if let Some((dx, dy, sc)) = crop_action {
             self.adjust_crop_and_update(ctx, dx, dy, sc);
+        }
+
+        if let Some(new_idx) = switch_photo {
+            self.select_photo(new_idx);
+        }
+
+        if let Some(clockwise) = rotate_action {
+            self.rotate_selected_photo(ctx, clockwise);
         }
 
         // --- MERKEZ PANEL: Kaydırılabilir Kart Izgarası (Grid View) ---
@@ -1326,6 +1568,22 @@ impl eframe::App for OkulFotoApp {
                             }
                         }
                     }
+
+                    ui.separator();
+
+                    if ui.small_button(RichText::new("↺ 90° Sola").size(11.0))
+                        .on_hover_text("Seçilen fotoğrafları 90° sola döndür")
+                        .clicked()
+                    {
+                        self.rotate_selected_photos(ctx, false);
+                    }
+
+                    if ui.small_button(RichText::new("↻ 90° Sağa").size(11.0))
+                        .on_hover_text("Seçilen fotoğrafları 90° sağa döndür")
+                        .clicked()
+                    {
+                        self.rotate_selected_photos(ctx, true);
+                    }
                 }
             });
 
@@ -1383,7 +1641,7 @@ impl eframe::App for OkulFotoApp {
                                             egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 58, 65))
                                         });
 
-                                    frame.show(ui, |ui| {
+                                    let card_resp = frame.show(ui, |ui| {
                                         ui.set_width(card_width - 10.0);
 
                                         // 1. SOL ÜST SEÇİM CHECKBOX & SAĞ ÜST KAPAT (SİL) BUTONU
@@ -1470,7 +1728,12 @@ impl eframe::App for OkulFotoApp {
                                                 }
                                             });
                                         });
-                                    });
+                                    }).response;
+
+                                    if self.scroll_to_selected && is_selected {
+                                        card_resp.scroll_to_me(Some(egui::Align::Center));
+                                        self.scroll_to_selected = false;
+                                    }
                                 });
 
                                 col += 1;

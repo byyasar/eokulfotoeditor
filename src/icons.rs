@@ -317,3 +317,97 @@ pub fn create_open_folder_icon_32() -> RgbaImage {
     img
 }
 
+/// 32x32 Önceki Resim İkonu (Mavi Daire İçinde Beyaz Sol Ok)
+pub fn create_prev_icon_32() -> RgbaImage {
+    let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
+    let bg = Rgba([41, 128, 185, 255]);
+    let white = Rgba([255, 255, 255, 255]);
+
+    for y in 0..32 {
+        for x in 0..32 {
+            let dx = x as f32 - 16.0;
+            let dy = y as f32 - 16.0;
+            if dx * dx + dy * dy <= 14.0 * 14.0 {
+                img.put_pixel(x, y, bg);
+            }
+        }
+    }
+
+    // Sol Ok Üçgeni (y=10..=22, sivri uç x=11'de, taban x=21'de)
+    for y in 10..=22 {
+        let min_x = 21 - (6 - (y as i32 - 16).abs()) * 10 / 6;
+        for x in min_x.max(11)..=21 {
+            img.put_pixel(x as u32, y, white);
+        }
+    }
+    img
+}
+
+/// 32x32 Sonraki Resim İkonu (Mavi Daire İçinde Beyaz Sağ Ok)
+pub fn create_next_icon_32() -> RgbaImage {
+    let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
+    let bg = Rgba([41, 128, 185, 255]);
+    let white = Rgba([255, 255, 255, 255]);
+
+    for y in 0..32 {
+        for x in 0..32 {
+            let dx = x as f32 - 16.0;
+            let dy = y as f32 - 16.0;
+            if dx * dx + dy * dy <= 14.0 * 14.0 {
+                img.put_pixel(x, y, bg);
+            }
+        }
+    }
+
+    // Sağ Ok Üçgeni (y=10..=22, taban x=11'de, sivri uç x=21'de)
+    for y in 10..=22 {
+        let max_x = 11 + (6 - (y as i32 - 16).abs()) * 10 / 6;
+        for x in 11..=max_x.min(21) {
+            img.put_pixel(x as u32, y, white);
+        }
+    }
+    img
+}
+
+/// 32x32 Sağa 90° Döndür İkonu (Saat Yönü Döndürme)
+pub fn create_rotate_right_32() -> RgbaImage {
+    let mut img = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
+    let color = Rgba([52, 152, 219, 255]);
+
+    // Dairesel yay (r=7..10)
+    for y in 0..32 {
+        for x in 0..32 {
+            let dx = x as f32 - 16.0;
+            let dy = y as f32 - 16.0;
+            let d2 = dx * dx + dy * dy;
+            if d2 >= 6.8 * 6.8 && d2 <= 9.8 * 9.8 {
+                // Sağ-üst çeyrekteki yay parçasını ok ucu için boş bırak
+                if !(dx > 1.0 && dy < 0.0) {
+                    img.put_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    // Ok ucu (sağ üstte saat yönünü gösteren sivri uç)
+    for dy in 0..6 {
+        for dx in 0..6 {
+            if dx <= dy + 1 && dy <= 5 && (dx as i32 + dy as i32) <= 7 {
+                let px = 17 + dx;
+                let py = 6 + dy;
+                if px < 32 && py < 32 {
+                    img.put_pixel(px as u32, py as u32, color);
+                }
+            }
+        }
+    }
+
+    img
+}
+
+/// 32x32 Sola 90° Döndür İkonu (Saat Yönünün Tersi)
+pub fn create_rotate_left_32() -> RgbaImage {
+    let right = create_rotate_right_32();
+    imageops::flip_horizontal(&right)
+}
+

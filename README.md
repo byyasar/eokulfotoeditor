@@ -16,6 +16,9 @@ Milli Eğitim Bakanlığı (MEB) **e-Okul** fotoğraf yükleme standartlarına t
 - **İnteraktif Görsel İnceleme & Düzenleme (GUI):**
   - **Zoom & Pan (Yakınlaştırma ve Kaydırma):** Hem tahta inceleme hem de vesikalık kırpma ekranlarında mouse tekerleğiyle yakınlaştırma ve sürükleme desteği.
   - **Kadraj Kaydırma Butonları:** İstenen yöne piksel hassasiyetinde kadraj ayarlama (32x32 vektörel ikonlar).
+  - **90° Fotoğraf Döndürme:** Yan veya ters çekilmiş fotoğrafları hem Vesikalık Kadrajı hem de Tahta İnceleme panellerinden 90° sağa/sola döndürebilme (32x32 ikonlu butonlar, toplu seçim araç çubuğu ve klavyeden `R` / `L` kısayolları). Döndürme sonrası akıllı yüz algılama otomatik olarak güncellenir.
+  - **Fotoğraflar Arası Hızlı Geçiş:** Vesikalık kadrajı panelinden "Önceki Resim" ve "Sonraki Resim" butonları ve klavye kısayolları (← / → ok tuşları, PageUp / PageDown) ile pratik gezinme ve otomatik kart odaklama.
+  - **Biyometrik Rehber Çizgileri:** e-Okul standartlarına uygun baş, göz ve omuz hizalama kılavuz çizgileri ve renk/kalınlık özelleştirmesi.
   - **Görsel Seçim / Çıkarma:** Sol üst onay kutusu (checkbox) ile çıktıya dahil etme/etmeme; sağ üst kapatma butonu ile listeden kalıcı çıkarma.
   - **Dinamik Kalite & Boyut Ayarı:** Hedef JPEG kalitesi (%40 - %100) ve min/max KB sınırlarını arayüzden belirleyebilme.
 - **Geniş Format Desteği:**
