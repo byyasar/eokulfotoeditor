@@ -9,6 +9,7 @@ fn main() {
     {
         println!("cargo:rerun-if-changed=app_icon.rc");
         println!("cargo:rerun-if-changed=app_icon.ico");
+        println!("cargo:rerun-if-changed=app.manifest");
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let out_file = format!("{}/app_icon.o", out_dir);
